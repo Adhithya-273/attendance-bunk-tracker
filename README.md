@@ -42,7 +42,7 @@ Before you begin, ensure you have the following installed:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/your-repo-name.git
+git clone https://github.com/Adhithya-273/attendance-bunk-tracker
 cd your-repo-name
 
 # 2. Install the required Python libraries
