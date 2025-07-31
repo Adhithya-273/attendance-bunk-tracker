@@ -1,27 +1,24 @@
 # app.py
-# To run this:
-# 1. Make sure you have Flask, Selenium, and BeautifulSoup installed (`pip install Flask selenium beautifulsoup4`)
-# 2. Open your command prompt in this folder.
-# 3. Run the command: flask run
-# 4. Open your web browser and go to http://127.0.0.1:5000
+# Final version for Render deployment with session management.
 
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template_string, request, session, redirect, url_for
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import time
+import os
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
+# A secret key is required for Flask session management
+app.config['SECRET_KEY'] = os.urandom(24)
 
 # --- Configuration ---
 LOGIN_URL = "https://asiet.etlab.app/user/login"
-DRIVER_PATH = r"C:\Users\adhit\Downloads\chromedriver-win64\chromedriver-win64\chromedriver.exe" # Make sure this path is correct
 
-# --- Attendance Calculation Functions ---
+# --- Attendance Calculation Functions (No changes needed) ---
 def calculate_current_percentage(attended, total):
     if total == 0: return 0.0
     return (attended / total) * 100
@@ -45,16 +42,19 @@ def classes_to_bunk(attended, total, target_percentage):
             return bunkable_classes
         bunkable_classes += 1
 
-# --- Web Scraping Function ---
+# --- Web Scraping Function (No changes needed) ---
 def get_attendance_data(username, password):
-    print("Starting the scraper...")
+    print("Starting scraper in Docker container...")
     options = webdriver.ChromeOptions()
-    options.add_argument('--headless') # Run browser in the background
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    service = Service(executable_path=DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=options)
-    wait = WebDriverWait(driver, 20)
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-features=site-per-process")
+    
+    driver = webdriver.Chrome(options=options)
+    wait = WebDriverWait(driver, 25)
     scraped_data = {}
     error_message = None
 
@@ -111,7 +111,7 @@ def get_attendance_data(username, password):
     
     return scraped_data, error_message
 
-# --- HTML Template ---
+# --- HTML Template (Updated for Session Logic) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -127,10 +127,6 @@ HTML_TEMPLATE = """
             background-color: white;
             border-radius: 0.75rem;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-            transition: transform 0.2s ease-in-out;
-        }
-        .card:hover {
-            transform: translateY(-5px);
         }
         .loader {
             border: 5px solid #f3f3f3;
@@ -151,50 +147,63 @@ HTML_TEMPLATE = """
     <div class="container mx-auto p-4 md:p-8 max-w-4xl">
         <header class="text-center mb-8">
             <h1 class="text-4xl font-bold text-gray-900">College Attendance Tracker</h1>
+            {% if not session.get('course_data') %}
             <p class="text-lg text-gray-600 mt-2">Enter your credentials to check your attendance status.</p>
+            {% endif %}
         </header>
 
-        <div class="card p-8 mb-8">
-            <form method="post" id="attendance-form">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                        <input type="text" name="username" id="username" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
+        {% if error %}
+            <div class="card p-6 bg-red-100 border border-red-300 text-red-800 mb-8">
+                <h3 class="font-bold text-lg">Error</h3>
+                <p>{{ error }}</p>
+                <a href="{{ url_for('logout') }}" class="text-blue-600 hover:underline mt-2 inline-block">Try again</a>
+            </div>
+        {% endif %}
+
+        {% if not session.get('course_data') %}
+            <div class="card p-8 mb-8">
+                <form method="post" action="{{ url_for('login') }}" id="attendance-form">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                            <input type="text" name="username" id="username" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
+                        </div>
+                        <div>
+                            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                            <input type="password" name="password" id="password" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
+                        </div>
                     </div>
-                    <div>
-                        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                        <input type="password" name="password" id="password" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
+                    <div class="mt-6">
+                        <label for="target" class="block text-sm font-medium text-gray-700 mb-1">Target Attendance (%)</label>
+                        <input type="number" name="target" id="target" value="75" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
                     </div>
+                    <div class="mt-8 text-center">
+                        <button type="submit" class="w-full md:w-auto bg-blue-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-blue-700 transition-transform transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300">
+                            Fetch Attendance
+                        </button>
+                    </div>
+                </form>
+            </div>
+            <div id="loader-container" class="hidden text-center">
+                <div class="loader"></div>
+                <p class="text-gray-600">Fetching your data... This might take a moment.</p>
+            </div>
+        {% else %}
+            <div class="card p-8 mb-8">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold">Attendance Report</h2>
+                    <a href="{{ url_for('logout') }}" class="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition">Log Out</a>
                 </div>
-                <div class="mt-6">
-                    <label for="target" class="block text-sm font-medium text-gray-700 mb-1">Target Attendance (%)</label>
-                    <input type="number" name="target" id="target" value="75" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
-                </div>
-                <div class="mt-8 text-center">
-                    <button type="submit" class="w-full md:w-auto bg-blue-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-blue-700 transition-transform transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300">
-                        Fetch Attendance
-                    </button>
-                </div>
-            </form>
-        </div>
-
-        <div id="loader-container" class="hidden text-center">
-            <div class="loader"></div>
-            <p class="text-gray-600">Fetching your data... This might take a moment.</p>
-        </div>
-
-        <div id="results-container">
-            {% if error %}
-                <div class="card p-6 bg-red-100 border border-red-300 text-red-800">
-                    <h3 class="font-bold text-lg">Error</h3>
-                    <p>{{ error }}</p>
-                </div>
-            {% endif %}
-
-            {% if results %}
-                <h2 class="text-2xl font-bold text-center mb-6">Attendance Report (Target: {{ target }}%)</h2>
+                <form method="post" action="{{ url_for('update_target') }}" class="flex items-end space-x-4 mb-6">
+                    <div>
+                        <label for="target" class="block text-sm font-medium text-gray-700 mb-1">Update Target (%)</label>
+                        <input type="number" name="target" id="target" value="{{ session.target }}" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition">
+                    </div>
+                    <button type="submit" class="bg-gray-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-gray-700 transition">Recalculate</button>
+                </form>
+                
                 <div class="overflow-x-auto">
-                    <table class="min-w-full bg-white rounded-lg shadow">
+                    <table class="min-w-full bg-white rounded-lg">
                         <thead class="bg-gray-200">
                             <tr>
                                 <th class="text-left font-semibold text-gray-700 p-4">Subject</th>
@@ -209,12 +218,12 @@ HTML_TEMPLATE = """
                                     <td class="p-4 font-medium">{{ subject }}</td>
                                     <td class="p-4 text-center">{{ data.attended }} / {{ data.total }}</td>
                                     <td class="p-4 text-center">
-                                        <span class="font-bold {% if data.percentage < target %}text-red-600{% else %}text-green-600{% endif %}">
+                                        <span class="font-bold {% if data.percentage < session.target %}text-red-600{% else %}text-green-600{% endif %}">
                                             {{ "%.2f"|format(data.percentage) }}%
                                         </span>
                                     </td>
                                     <td class="p-4">
-                                        {% if data.percentage < target %}
+                                        {% if data.percentage < session.target %}
                                             <span class="text-red-600">Attend next <strong>{{ data.needed }}</strong> class(es)</span>
                                         {% else %}
                                             <span class="text-green-600">You can bunk <strong>{{ data.bunks_available }}</strong> class(es)</span>
@@ -225,49 +234,70 @@ HTML_TEMPLATE = """
                         </tbody>
                     </table>
                 </div>
-            {% endif %}
-        </div>
+            </div>
+        {% endif %}
     </div>
     <script>
-        document.getElementById('attendance-form').addEventListener('submit', function() {
+        document.getElementById('attendance-form')?.addEventListener('submit', function() {
             document.getElementById('loader-container').classList.remove('hidden');
-            document.getElementById('results-container').innerHTML = ''; // Clear previous results
         });
     </script>
 </body>
 </html>
 """
 
-# --- Flask Routes ---
-@app.route('/', methods=['GET', 'POST'])
+# --- Flask Routes (Updated for Session Logic) ---
+@app.route('/')
 def index():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        target = float(request.form.get('target', 75.0))
+    # If there is no data in the session, show the login page
+    if 'course_data' not in session:
+        return render_template_string(HTML_TEMPLATE)
 
-        course_data, error_message = get_attendance_data(username, password)
+    # If data exists, calculate results and show the report
+    results = {}
+    target = session.get('target', 75.0)
+    for subject, data in session['course_data'].items():
+        attended = data['attended']
+        total = data['total']
+        percentage = calculate_current_percentage(attended, total)
+        results[subject] = {
+            'attended': attended,
+            'total': total,
+            'percentage': percentage,
+            'needed': classes_needed_for_target(attended, total, target) if percentage < target else 0,
+            'bunks_available': classes_to_bunk(attended, total, target) if percentage >= target else 0
+        }
+    return render_template_string(HTML_TEMPLATE, results=results)
 
-        if error_message:
-            return render_template_string(HTML_TEMPLATE, error=error_message)
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form['username']
+    password = request.form['password']
+    target = float(request.form.get('target', 75.0))
 
-        results = {}
-        for subject, data in course_data.items():
-            attended = data['attended']
-            total = data['total']
-            percentage = calculate_current_percentage(attended, total)
-            
-            results[subject] = {
-                'attended': attended,
-                'total': total,
-                'percentage': percentage,
-                'needed': classes_needed_for_target(attended, total, target) if percentage < target else 0,
-                'bunks_available': classes_to_bunk(attended, total, target) if percentage >= target else 0
-            }
+    course_data, error_message = get_attendance_data(username, password)
 
-        return render_template_string(HTML_TEMPLATE, results=results, target=target)
+    if error_message:
+        return render_template_string(HTML_TEMPLATE, error=error_message)
+    
+    # Store the scraped data and target in the session
+    session['course_data'] = course_data
+    session['target'] = target
+    
+    return redirect(url_for('index'))
 
-    return render_template_string(HTML_TEMPLATE)
+@app.route('/update_target', methods=['POST'])
+def update_target():
+    if 'course_data' in session:
+        session['target'] = float(request.form.get('target', 75.0))
+    return redirect(url_for('index'))
+
+@app.route('/logout')
+def logout():
+    # Clear the session to log the user out
+    session.clear()
+    return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
