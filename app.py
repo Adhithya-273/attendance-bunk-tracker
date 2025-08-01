@@ -1,5 +1,6 @@
 # app.py
 # Final version for Render deployment with session management.
+# Updated to parse the "Attendance By Subject" summary table for maximum reliability.
 
 from flask import Flask, render_template_string, request, session, redirect, url_for
 from selenium import webdriver
@@ -9,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import time
 import os
+import re # Import regular expressions for parsing
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -42,7 +44,7 @@ def classes_to_bunk(attended, total, target_percentage):
             return bunkable_classes
         bunkable_classes += 1
 
-# --- Web Scraping Function (No changes needed) ---
+# --- Web Scraping Function (Updated Parsing Logic) ---
 def get_attendance_data(username, password):
     print("Starting scraper in Docker container...")
     options = webdriver.ChromeOptions()
@@ -71,47 +73,58 @@ def get_attendance_data(username, password):
         
         wait.until(EC.presence_of_element_located((By.ID, "breadcrumb")))
         print("Successfully logged in.")
+        
         attendance_link = wait.until(EC.element_to_be_clickable((By.LINK_TEXT, "Attendance")))
         attendance_link.click()
         print("Clicked 'Attendance' link.")
         
-        wait.until(EC.presence_of_element_located((By.ID, "itsthetable")))
-        print("Attendance table found. Parsing data...")
+        attendance_by_subject_link = wait.until(EC.element_to_be_clickable((By.LINK_TEXT, "Attendance By Subject")))
+        attendance_by_subject_link.click()
+        print("Clicked 'Attendance By Subject' link.")
+        
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.items")))
+        print("Found attendance summary table. Parsing data...")
         time.sleep(2)
 
         page_html = driver.page_source
         soup = BeautifulSoup(page_html, 'html.parser')
         
         subject_attendance = {}
-        attendance_table = soup.find('table', id='itsthetable')
+        attendance_table = soup.find('table', class_='items')
         
         if attendance_table:
-            period_cells = attendance_table.find_all('td', class_=['present', 'absent'])
-            for cell in period_cells:
-                link = cell.find('a')
-                if link:
-                    subject_name = link.find(text=True, recursive=False).strip()
-                    if subject_name:
-                        if subject_name not in subject_attendance:
-                            subject_attendance[subject_name] = {'attended': 0, 'total': 0}
-                        subject_attendance[subject_name]['total'] += 1
-                        if 'present' in cell.get('class', []):
-                            subject_attendance[subject_name]['attended'] += 1
+            header_row = attendance_table.find('thead').find('tr')
+            # Get subject codes from the header, skipping the first 3 columns (Reg, Roll, Name)
+            subjects = [th.text.strip() for th in header_row.find_all('th')[3:-2]] # Also skip last 2 (Total, %)
+
+            data_row = attendance_table.find('tbody').find('tr')
+            # Get attendance data from the cells, skipping the first 3 columns
+            attendance_cells = data_row.find_all('td')[3:-2]
+
+            for i, subject_code in enumerate(subjects):
+                cell_text = attendance_cells[i].text.strip()
+                # Use regex to find numbers in the "attended/total" format
+                match = re.match(r'(\d+)/(\d+)', cell_text)
+                if match:
+                    attended = int(match.group(1))
+                    total = int(match.group(2))
+                    subject_attendance[subject_code] = {'attended': attended, 'total': total}
+            
             scraped_data = subject_attendance
-            print("Successfully parsed all attendance data.")
+            print("Successfully parsed all attendance data from summary table.")
         else:
-            error_message = "Could not find the attendance table after logging in."
+            error_message = "Could not find the attendance summary table on the 'Attendance By Subject' page."
 
     except Exception as e:
         print(f"An error occurred: {e}")
-        error_message = f"An error occurred during scraping. It could be due to incorrect credentials or a change in the website's structure. Please check your details and try again."
+        error_message = f"An error occurred during scraping. It could be due to incorrect credentials or a change in the website's structure."
     finally:
         print("Closing the scraper.")
         driver.quit()
     
     return scraped_data, error_message
 
-# --- HTML Template (Updated for Session Logic) ---
+# --- HTML Template (No changes needed) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -192,7 +205,7 @@ HTML_TEMPLATE = """
             <div class="card p-8 mb-8">
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold">Attendance Report</h2>
-                    <a href="{{ url_for('logout') }}" class="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition">Log Out</a>
+                    <a href="{{ url_for('logout') }}" class="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition">Log Out & Refresh Data</a>
                 </div>
                 <form method="post" action="{{ url_for('update_target') }}" class="flex items-end space-x-4 mb-6">
                     <div>
@@ -249,11 +262,9 @@ HTML_TEMPLATE = """
 # --- Flask Routes (Updated for Session Logic) ---
 @app.route('/')
 def index():
-    # If there is no data in the session, show the login page
-    if 'course_data' not in session:
+    if 'course_data' not in session or not session['course_data']:
         return render_template_string(HTML_TEMPLATE)
 
-    # If data exists, calculate results and show the report
     results = {}
     target = session.get('target', 75.0)
     for subject, data in session['course_data'].items():
@@ -280,7 +291,10 @@ def login():
     if error_message:
         return render_template_string(HTML_TEMPLATE, error=error_message)
     
-    # Store the scraped data and target in the session
+    if not course_data:
+        error_message = "Could not parse any attendance data from the summary page. The website layout may have changed."
+        return render_template_string(HTML_TEMPLATE, error=error_message)
+
     session['course_data'] = course_data
     session['target'] = target
     
@@ -294,7 +308,6 @@ def update_target():
 
 @app.route('/logout')
 def logout():
-    # Clear the session to log the user out
     session.clear()
     return redirect(url_for('index'))
 
